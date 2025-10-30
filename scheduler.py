@@ -48,7 +48,6 @@ class Scheduler:
         self.log = []  # human-readable + snapshots
         self.events = []  # structured log for export
         self.verbose = verbose  # if True, print log entries to console
-
         self.future_processes = [] # processes that have not yet started
 
     def on_state_change(self, callback):
@@ -70,11 +69,14 @@ class Scheduler:
         
         queue.append(process) # add process to queue
 
-        if queue is self.ready_queue: # if th process is going to the ready queue, set as ready
+        if queue is self.ready_queue: # if the process is going to the ready queue, set as ready
             process.state = "ready"
           # keep track of process 
-            self._record(f"{process.pid} added to queue", event_type = "enqueue", proc = process.pid)
-            
+            self._record(
+                f"{process.pid} added to queue",
+                event_type = "enqueue",
+                proc = process.pid
+            )
 
     def processes(self):
         """Return all processes known to the scheduler"""
@@ -124,29 +126,15 @@ class Scheduler:
 
     def _snapshot(self):
         """Take a snapshot of the current state for logging"""
-
-        # The join method is used to concatenate the process IDs in
-        # the ready queue into a single string, separated by commas.
-        # If the ready queue is empty, it defaults to the string "empty".
-        rq = ", ".join([p.pid for p in self.ready_queue]) or "empty"
-
-        # Same as above but for the wait queue
-        wq = ", ".join([p.pid for p in self.wait_queue]) or "empty"
-
-        # Join the status of each CPU and IO device into strings separated by " | "
-        cpus = " | ".join([str(cpu) for cpu in self.cpus])
-
-        # Same as above but for IO devices
-        ios = " | ".join([str(dev) for dev in self.io_devices])
-
-        # Creates a string snapshot of the current state of
-        # the scheduler including ready queue, wait queue, CPUs, and IO devices
-        snap = f"  [Ready: {rq}]  [Wait: {wq}]  Cpus:[{cpus}]  Ios:[{ios}]"
-
-        # Append the snapshot to the log
-        self.log.append(snap)
-        if self.verbose:
-            print(snap)
+        return {
+            "clock": self.clock.now(),
+            "ready": [(p.pid, p.remaining_quantum) for p in self.ready_queue],
+            "wait": [p.pid for p in self.wait_queue],
+            "cpu": [cpu.current.pid if cpu.current else None for cpu in self.cpus],
+            "io": [dev.current.pid if dev.current else None for dev in self.io_devices],
+            "finished": [p.pid for p in self.finished],
+        }
+        
 
     def _callback(self, pid, new_state):
         """Placeholder for state change callback"""
@@ -163,12 +151,24 @@ class Scheduler:
                 self.ready_queue.append(p) # add process to ready queue to later be scheduled 
                 self._record(f"{p.pid} added to ready queue", event_type = "arrival", proc = p.pid)
                 self.future_processes.remove(p) # remove the process from future_processes
-       
-      # Iterate over each CPU and tick (decrement burst time) by 1 if not idle
+        # CPU Ticks
         for cpu in self.cpus:
 
-            # proc is the process that just finished its CPU burst or None
             proc = cpu.tick()
+
+            #decrement quantum if CPU is running
+            if cpu.current:
+                cpu.current.remaining_quantum -=1
+                if cpu.current.remaining_quantum <= 0 and cpu.current.remaining_burst_time() >0:
+                    prem_process = cpu.current
+                    cpu.current = None
+                    prem_process.state = "ready"
+                    prem_process.remaining_quantum = prem_process.quantum
+                    self.ready_queue.append(prem_process)
+                    self._record(
+                        f"{prem_process.pid} quantum expired",
+                        event_type = "preempted", proc = prem_process.pid, device = f"CPU{cpu.pid}",
+                    )
 
             # If a process finished its CPU burst, handle it.
             # This means that proc is not None
